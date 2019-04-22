@@ -1,0 +1,42 @@
+TNode{
+  TNode* next;
+}
+
+TLFAllocFreeList {
+  TNode volatile* Head;
+
+  private void *DoAlloc() {
+      TNode *res;
+      for (res = Head; res; res = Head) {
+          if (DoCas(&Head, res->Next, res) == res) // head -> next -> ...  =>  head + next -> ...
+              break;
+      }
+      return res;
+  }
+
+  private static void Enqueue(TNode *volatile *headPtr, TNode *newHead) {
+      for(;;) {
+          TNode *volatile prevHead = *headPtr;
+          newHead->Next = prevHead;
+          if (DoCas(headPtr, newHead, prevHead) == prevHead) // newHead + head -> ...  =>   newHead -> head -> ...
+              break;
+      }
+  }
+
+  public void Free(void *ptr) {
+      TNode *newFree = (TNode*)ptr;
+      Enqueue(&Head, newFree);
+  }
+
+  public void *Alloc() {
+    void *res = DoAlloc();
+    return res;
+  }
+
+  init() {
+     Head = 5 -> 4 -> 3 -> 2 -> 1
+  }
+}
+
+
+inline T* DoCas(T *volatile *target, T *exchange, T *compare)

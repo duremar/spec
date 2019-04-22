@@ -1,0 +1,85 @@
+https://arc.yandex-team.ru/wsvn/arc/trunk/arcadia/library/lfalloc/lf_allocX64.cpp?rev=2731975&peg=2731975
+
+TNode{
+  TNode* next;
+}
+
+TLFAllocFreeList {
+  TNode volatile* Head;
+  TNode *volatile Pending;
+  TAtomic AllocCount;
+  TAtomic PendingToFreeListCounter;
+
+  private void *DoAlloc() {
+      TNode *res;
+      for (res = Head; res; res = Head) {
+          TNode *keepNext = res->Next;
+          if (DoCas(&Head, keepNext, res) == res) // head -> next -> ...  =>  head + next -> ...
+              break;
+      }
+      return res;
+  }
+
+  private static void Enqueue(TNode *volatile *headPtr, TNode *newHead) {
+      for(;;) {
+          TNode *volatile prevHead = *headPtr;
+          newHead->Next = prevHead;
+          if (DoCas(headPtr, newHead, prevHead) == prevHead) // newHead + head -> ...  =>   newHead -> head -> ...
+              break;
+      }
+  }
+
+  public void Free(void *ptr) {
+      TNode *newFree = (TNode*)ptr;
+      if (AtomicAdd(AllocCount, 0) == 0)
+          Enqueue(&Head, newFree);
+      else
+          Enqueue(&Pending, newFree);
+  }
+
+  public void *Alloc() {
+      TAtomic keepCounter = AtomicAdd(PendingToFreeListCounter, 0);
+      TNode *fl = Pending;
+      if (AtomicAdd(AllocCount, 1) == 1) {
+          // no other allocs in progress
+          if (fl &&
+              keepCounter == AtomicAdd(PendingToFreeListCounter, 0) &&
+              DoCas(&Pending, (TNode*)nullptr, fl) == fl)
+          {
+              // pick first element from Pending and return it
+              void *res = fl;
+              fl = fl->Next;
+              // if there are other elements in Pending list, add them to main free list
+              FreeList(fl);
+              AtomicAdd(PendingToFreeListCounter, 1);
+              AtomicAdd(AllocCount, -1);
+              return res;
+          }
+      }
+      void *res = DoAlloc();
+      AtomicAdd(AllocCount, -1);
+      return res;
+  }
+
+  void FreeList(TNode *fl) {  // fl ..->.. flTail + head -> .. -> tl => fl -> .. flTail -> head .. -> tl
+      if (!fl)
+          return;
+      TNode *flTail = fl;
+      while (flTail->Next)
+          flTail = flTail->Next;
+      for(;;) {
+          TNode *volatile prevHead = Head;
+          flTail->Next = prevHead;
+          if (DoCas(&Head, fl, prevHead) == prevHead)
+              break;
+      }
+  }
+
+  init() {
+     Head = 5 -> 4 -> 3 -> 2 -> 1
+  }
+}
+
+
+inline T* DoCas(T *volatile *target, T *exchange, T *compare)
+inline long AtomicAdd(TAtomic& a, long b)
